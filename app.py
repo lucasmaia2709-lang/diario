@@ -8,19 +8,38 @@ from datetime import datetime, date
 st.set_page_config(page_title="Histórico Climático", page_icon="🌦️")
 
 st.title("🌦️ Histórico Climático - Open-Meteo")
-st.markdown("Consulte dados históricos de temperatura e chuva de qualquer cidade.")
+st.markdown("""
+Consulte dados históricos de temperatura e chuva de qualquer cidade.
+Dados fornecidos por: [Open-Meteo Archive API](https://open-meteo.com/en/docs/historical-weather-api)
+""")
 
 # --- Entrada de Dados (Sidebar) ---
 with st.sidebar:
     st.header("Configurações")
     city = st.text_input("Cidade", value="São Paulo")
     
+    # Definindo limites da API (1940 até hoje)
+    min_date = date(1940, 1, 1)
+    max_date = date.today()
+
     # Datas padrão
     default_start = date(2023, 1, 1)
     default_end = date(2023, 1, 31)
     
-    start_date = st.date_input("Data Inicial", value=default_start)
-    end_date = st.date_input("Data Final", value=default_end)
+    # Seletores de data com restrição de intervalo para evitar erros na API
+    start_date = st.date_input(
+        "Data Inicial", 
+        value=default_start, 
+        min_value=min_date, 
+        max_value=max_date
+    )
+    
+    end_date = st.date_input(
+        "Data Final", 
+        value=default_end, 
+        min_value=min_date, 
+        max_value=max_date
+    )
     
     search_btn = st.button("Buscar Histórico")
 
