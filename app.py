@@ -1,253 +1,163 @@
-import streamlit as st
-import sqlite3
-import datetime
+import tkinter as tk
+from tkinter import ttk, messagebox
+import requests
 import pandas as pd
-import os
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from datetime import datetime
 
-# --- Configuração do Banco de Dados ---
-class Database:
-    def __init__(self, db_name="diario_obra.db"):
-        self.db_name = db_name
-        self.create_tables()
+class WeatherApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Histórico Climático - Open-Meteo")
+        self.root.geometry("900x700")
+        
+        # Configuração de estilo
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        # --- Frame de Entrada (Input) ---
+        input_frame = ttk.LabelFrame(root, text="Dados da Pesquisa", padding="20")
+        input_frame.pack(fill="x", padx=15, pady=10)
+        
+        # Cidade
+        ttk.Label(input_frame, text="Cidade:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        self.city_entry = ttk.Entry(input_frame, width=30)
+        self.city_entry.grid(row=0, column=1, padx=5, pady=5)
+        self.city_entry.insert(0, "São Paulo") # Valor padrão
 
-    def get_connection(self):
-        return sqlite3.connect(self.db_name, check_same_thread=False)
+        # Data Inicial
+        ttk.Label(input_frame, text="Data Inicial (AAAA-MM-DD):").grid(row=0, column=2, padx=5, pady=5, sticky="w")
+        self.start_date_entry = ttk.Entry(input_frame, width=15)
+        self.start_date_entry.grid(row=0, column=3, padx=5, pady=5)
+        self.start_date_entry.insert(0, "2023-01-01")
 
-    def create_tables(self):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS obras (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    nome TEXT NOT NULL,
-                    endereco TEXT,
-                    inicio TEXT
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS relatorios (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    obra_id INTEGER,
-                    data TEXT,
-                    clima TEXT,
-                    condicao_tempo TEXT,
-                    atividades TEXT,
-                    obs_gerais TEXT,
-                    FOREIGN KEY(obra_id) REFERENCES obras(id)
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS efetivo (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    relatorio_id INTEGER,
-                    funcao TEXT,
-                    quantidade INTEGER,
-                    FOREIGN KEY(relatorio_id) REFERENCES relatorios(id)
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS fotos (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    relatorio_id INTEGER,
-                    nome_arquivo TEXT,
-                    descricao TEXT,
-                    FOREIGN KEY(relatorio_id) REFERENCES relatorios(id)
-                )
-            """)
-            conn.commit()
+        # Data Final
+        ttk.Label(input_frame, text="Data Final (AAAA-MM-DD):").grid(row=1, column=2, padx=5, pady=5, sticky="w")
+        self.end_date_entry = ttk.Entry(input_frame, width=15)
+        self.end_date_entry.grid(row=1, column=3, padx=5, pady=5)
+        self.end_date_entry.insert(0, "2023-01-31")
 
-    def get_obras(self):
-        with self.get_connection() as conn:
-            return pd.read_sql("SELECT id, nome FROM obras", conn)
+        # Botão Buscar
+        search_btn = ttk.Button(input_frame, text="Buscar Histórico", command=self.fetch_data)
+        search_btn.grid(row=0, column=4, rowspan=2, padx=15, ipady=10)
 
-    def add_obra(self, nome, endereco):
-        with self.get_connection() as conn:
-            data_inicio = datetime.date.today().strftime("%d/%m/%Y")
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO obras (nome, endereco, inicio) VALUES (?, ?, ?)", (nome, endereco, data_inicio))
-            conn.commit()
+        # --- Frame de Resultados ---
+        self.result_frame = ttk.Frame(root)
+        self.result_frame.pack(fill="both", expand=True, padx=15, pady=5)
+        
+        # Área de texto para status/resumo
+        self.status_label = ttk.Label(self.result_frame, text="Insira os dados e clique em buscar.", font=("Arial", 10))
+        self.status_label.pack(pady=5)
 
-    def get_relatorio_dia(self, obra_id, data_str):
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM relatorios WHERE obra_id = ? AND data = ?", (obra_id, data_str))
-            relatorio = cursor.fetchone()
-            if relatorio:
-                cols = [description[0] for description in cursor.description]
-                return dict(zip(cols, relatorio))
-            return None
+        # Placeholder para o gráfico
+        self.canvas = None
 
-    def save_relatorio(self, obra_id, data, clima, condicao, atividades, obs, efetivo_dict, fotos_info):
+    def get_coordinates(self, city_name):
+        """Busca latitude e longitude da cidade usando a API de Geocoding."""
         try:
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                # 1. Verifica se já existe relatório para atualizar ou criar novo
-                cursor.execute("SELECT id FROM relatorios WHERE obra_id = ? AND data = ?", (obra_id, data))
-                existente = cursor.fetchone()
-                
-                relatorio_id = None
-                
-                if existente:
-                    relatorio_id = existente[0]
-                    cursor.execute("""
-                        UPDATE relatorios SET clima=?, condicao_tempo=?, atividades=?, obs_gerais=?
-                        WHERE id=?
-                    """, (clima, condicao, atividades, obs, relatorio_id))
-                    # Limpa dados antigos vinculados para reescrever
-                    cursor.execute("DELETE FROM efetivo WHERE relatorio_id=?", (relatorio_id,))
-                    cursor.execute("DELETE FROM fotos WHERE relatorio_id=?", (relatorio_id,))
-                else:
-                    cursor.execute("""
-                        INSERT INTO relatorios (obra_id, data, clima, condicao_tempo, atividades, obs_gerais)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (obra_id, data, clima, condicao, atividades, obs))
-                    relatorio_id = cursor.lastrowid
-
-                # 2. Salvar Efetivo
-                for funcao, qtd in efetivo_dict.items():
-                    if qtd > 0:
-                        cursor.execute("INSERT INTO efetivo (relatorio_id, funcao, quantidade) VALUES (?, ?, ?)", 
-                                            (relatorio_id, funcao, qtd))
-
-                # 3. Salvar Registro de Fotos
-                for foto in fotos_info:
-                    cursor.execute("INSERT INTO fotos (relatorio_id, nome_arquivo, descricao) VALUES (?, ?, ?)",
-                                        (relatorio_id, foto['nome'], foto['desc']))
-                
-                conn.commit()
-                return True
-        except Exception as e:
-            st.error(f"Erro ao salvar: {e}")
-            return False
-
-# --- Interface App (Streamlit) ---
-def main():
-    st.set_page_config(page_title="Diário de Obra", layout="wide")
-    st.title("🏗️ Sistema de Diário de Obra (RDO)")
-
-    db = Database()
-
-    # --- Sidebar: Seleção de Obra ---
-    st.sidebar.header("Gerenciar Obras")
-    
-    # Adicionar Nova Obra
-    with st.sidebar.expander("Cadastrar Nova Obra"):
-        with st.form("nova_obra_form"):
-            novo_nome = st.text_input("Nome da Obra")
-            novo_end = st.text_input("Endereço")
-            btn_criar = st.form_submit_button("Criar Obra")
-            if btn_criar and novo_nome:
-                db.add_obra(novo_nome, novo_end)
-                st.success("Obra cadastrada!")
-                st.rerun()
-
-    # Selecionar Obra Existente
-    df_obras = db.get_obras()
-    if df_obras.empty:
-        st.warning("👈 Cadastre uma obra no menu lateral para começar.")
-        return
-
-    obra_selecionada_nome = st.sidebar.selectbox("Selecione a Obra Atual:", df_obras['nome'])
-    obra_selecionada_id = int(df_obras[df_obras['nome'] == obra_selecionada_nome]['id'].values[0])
-
-    st.sidebar.divider()
-    st.sidebar.info("Preencha as abas e clique em 'Salvar' na última aba.")
-    
-    # --- Corpo Principal ---
-    
-    # Data
-    col_data, col_vazio = st.columns([1, 3])
-    with col_data:
-        data_selecionada = st.date_input("Data do Relatório", datetime.date.today())
-        data_str = data_selecionada.strftime("%d/%m/%Y")
-
-    # Tentar carregar dados se já existirem para o dia
-    dados_existentes = db.get_relatorio_dia(obra_selecionada_id, data_str)
-    
-    # Valores Iniciais
-    def_clima = dados_existentes['clima'] if dados_existentes else "Sol"
-    def_condicao = dados_existentes['condicao_tempo'] if dados_existentes else "Manhã"
-    def_atv = dados_existentes['atividades'] if dados_existentes else ""
-    def_obs = dados_existentes['obs_gerais'] if dados_existentes else ""
-
-    # Abas
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Geral", "👷 Efetivo", "📷 Fotos", "💾 Salvar & Exportar"])
-
-    with tab1:
-        st.subheader("Informações Gerais")
-        c1, c2 = st.columns(2)
-        with c1:
-            clima = st.radio("Condições Climáticas", ["Sol", "Nublado", "Chuva Fraca", "Chuva Forte"], 
-                             index=["Sol", "Nublado", "Chuva Fraca", "Chuva Forte"].index(def_clima) if def_clima in ["Sol", "Nublado", "Chuva Fraca", "Chuva Forte"] else 0)
-        with c2:
-            condicao = st.selectbox("Período", ["Manhã", "Tarde", "Integral", "Noite"], 
-                                    index=["Manhã", "Tarde", "Integral", "Noite"].index(def_condicao) if def_condicao in ["Manhã", "Tarde", "Integral", "Noite"] else 0)
-        
-        atividades = st.text_area("Atividades Executadas Hoje:", value=def_atv, height=150, placeholder="Descreva o que foi feito...")
-        obs = st.text_area("Ocorrências / Observações:", value=def_obs, height=100, placeholder="Algum problema ou observação importante?")
-
-    with tab2:
-        st.subheader("Efetivo no Canteiro")
-        st.write("Informe a quantidade de profissionais presentes:")
-        funcoes = ["Engenheiro", "Mestre de Obras", "Pedreiro", "Servente", "Eletricista", "Encanador", "Pintor", "Carpinteiro", "Vigia"]
-        
-        efetivo_input = {}
-        cols = st.columns(3)
-        for i, func in enumerate(funcoes):
-            with cols[i % 3]:
-                efetivo_input[func] = st.number_input(f"{func}", min_value=0, step=1, value=0)
-
-    with tab3:
-        st.subheader("Registro Fotográfico")
-        uploaded_files = st.file_uploader("Escolha as fotos do dia", accept_multiple_files=True, type=['png', 'jpg', 'jpeg'])
-        fotos_info = []
-        if uploaded_files:
-            st.image(uploaded_files, width=200, caption=[f.name for f in uploaded_files])
-            for up_file in uploaded_files:
-                # Em ambiente web, o caminho real do arquivo é temporário.
-                fotos_info.append({"nome": up_file.name, "desc": "Upload via Sistema"})
-
-    with tab4:
-        st.subheader("Resumo e Exportação")
-        
-        # Gerar Texto de Preview
-        texto_export = f"""=== RELATÓRIO DIÁRIO DE OBRA ===
-Obra: {obra_selecionada_nome}
-Data: {data_str}
-Clima: {clima} - {condicao}
-------------------------------
-ATIVIDADES:
-{atividades}
-
-EFETIVO:
-"""
-        tem_efetivo = False
-        for func, qtd in efetivo_input.items():
-            if qtd > 0:
-                texto_export += f"- {func}: {qtd}\n"
-                tem_efetivo = True
-        if not tem_efetivo: texto_export += "(Sem registro de efetivo)\n"
-
-        texto_export += f"\nOBSERVAÇÕES:\n{obs}\n"
-        
-        texto_export += "\nFOTOS REGISTRADAS:\n"
-        if fotos_info:
-            for f in fotos_info:
-                texto_export += f"- {f['nome']}\n"
-        else:
-            texto_export += "(Nenhuma foto anexada)\n"
-
-        st.text_area("Prévia do Relatório (Copie e cole se precisar):", value=texto_export, height=300)
-
-        if st.button("💾 SALVAR DADOS NO SISTEMA", type="primary"):
-            if not atividades and not tem_efetivo:
-                st.error("Preencha pelo menos as atividades ou o efetivo antes de salvar.")
+            url = "https://geocoding-api.open-meteo.com/v1/search"
+            params = {"name": city_name, "count": 1, "language": "pt", "format": "json"}
+            response = requests.get(url, params=params)
+            data = response.json()
+            
+            if "results" in data and len(data["results"]) > 0:
+                result = data["results"][0]
+                return result["latitude"], result["longitude"], result["country"]
             else:
-                sucesso = db.save_relatorio(obra_selecionada_id, data_str, clima, condicao, atividades, obs, efetivo_input, fotos_info)
-                if sucesso:
-                    st.balloons()
-                    st.success("Relatório salvo com sucesso no banco de dados!")
+                return None, None, None
+        except Exception as e:
+            messagebox.showerror("Erro de Conexão", f"Erro ao buscar coordenadas: {e}")
+            return None, None, None
+
+    def fetch_data(self):
+        """Busca os dados históricos e gera o gráfico."""
+        city = self.city_entry.get()
+        start_date = self.start_date_entry.get()
+        end_date = self.end_date_entry.get()
+
+        # Validação básica
+        if not city or not start_date or not end_date:
+            messagebox.showwarning("Aviso", "Por favor, preencha todos os campos.")
+            return
+
+        # 1. Obter Coordenadas
+        lat, lon, country = self.get_coordinates(city)
+        if lat is None:
+            messagebox.showerror("Erro", f"Cidade '{city}' não encontrada.")
+            return
+
+        self.status_label.config(text=f"Buscando dados para {city}, {country}...")
+        self.root.update()
+
+        # 2. Obter Histórico Climático
+        try:
+            archive_url = "https://archive-api.open-meteo.com/v1/archive"
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "start_date": start_date,
+                "end_date": end_date,
+                "daily": ["temperature_2m_max", "temperature_2m_min", "precipitation_sum"],
+                "timezone": "auto"
+            }
+            
+            response = requests.get(archive_url, params=params)
+            data = response.json()
+
+            if "error" in data:
+                messagebox.showerror("Erro API", f"Erro na API: {data['reason']}")
+                return
+
+            # Processar dados com Pandas
+            daily_data = data["daily"]
+            df = pd.DataFrame({
+                "Data": pd.to_datetime(daily_data["time"]),
+                "Máxima (°C)": daily_data["temperature_2m_max"],
+                "Mínima (°C)": daily_data["temperature_2m_min"],
+                "Precipitação (mm)": daily_data["precipitation_sum"]
+            })
+
+            self.plot_graph(df, city, country)
+            self.status_label.config(text=f"Dados carregados para {city}, {country} ({start_date} a {end_date})")
+
+        except Exception as e:
+            messagebox.showerror("Erro", f"Ocorreu um erro ao processar os dados: {e}")
+
+    def plot_graph(self, df, city, country):
+        """Desenha o gráfico usando Matplotlib dentro do Tkinter."""
+        
+        # Limpar gráfico anterior se existir
+        if self.canvas:
+            self.canvas.get_tk_widget().destroy()
+
+        # Criar a figura
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+        fig.suptitle(f"Clima Histórico: {city}, {country}", fontsize=14)
+
+        # Gráfico de Temperatura (Máxima e Mínima)
+        ax1.plot(df["Data"], df["Máxima (°C)"], color="red", label="Máxima", marker="o", markersize=4)
+        ax1.plot(df["Data"], df["Mínima (°C)"], color="blue", label="Mínima", marker="o", markersize=4)
+        ax1.set_ylabel("Temperatura (°C)")
+        ax1.legend(loc="upper right")
+        ax1.grid(True, linestyle="--", alpha=0.6)
+
+        # Gráfico de Precipitação (Barras)
+        ax2.bar(df["Data"], df["Precipitação (mm)"], color="skyblue", label="Chuva")
+        ax2.set_ylabel("Precipitação (mm)")
+        ax2.set_xlabel("Data")
+        ax2.legend(loc="upper right")
+        ax2.grid(True, linestyle="--", alpha=0.6, axis='y')
+
+        # Formatar datas no eixo X
+        fig.autofmt_xdate()
+
+        # Integrar no Tkinter
+        self.canvas = FigureCanvasTkAgg(fig, master=self.result_frame)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
 
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    app = WeatherApp(root)
+    root.mainloop()
