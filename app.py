@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-import matplotlib.pyplot as plt
+# Removido matplotlib para evitar erros de dependência
 from datetime import datetime, date
 
 # Configuração da página
@@ -42,28 +42,18 @@ def get_coordinates(city_name):
         return None, None, None
 
 def plot_graph(df, city, country):
-    """Gera os gráficos usando Matplotlib e exibe no Streamlit."""
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
-    fig.suptitle(f"Clima Histórico: {city}, {country}", fontsize=16)
-
-    # Gráfico de Temperatura
-    ax1.plot(df["Data"], df["Máxima (°C)"], color="#d62728", label="Máxima", marker="o", markersize=4)
-    ax1.plot(df["Data"], df["Mínima (°C)"], color="#1f77b4", label="Mínima", marker="o", markersize=4)
-    ax1.set_ylabel("Temperatura (°C)")
-    ax1.legend()
-    ax1.grid(True, linestyle="--", alpha=0.6)
-
-    # Gráfico de Precipitação
-    ax2.bar(df["Data"], df["Precipitação (mm)"], color="#17becf", label="Chuva")
-    ax2.set_ylabel("Precipitação (mm)")
-    ax2.set_xlabel("Data")
-    ax2.legend()
-    ax2.grid(True, linestyle="--", alpha=0.6, axis='y')
-
-    fig.autofmt_xdate()
+    """Gera os gráficos usando componentes nativos do Streamlit (sem Matplotlib)."""
     
-    # Exibe o gráfico no Streamlit
-    st.pyplot(fig)
+    # Prepara os dados definindo a Data como índice para o eixo X
+    chart_data = df.set_index("Data")
+    
+    st.subheader(f"🌡️ Temperatura em {city}, {country}")
+    # Gráfico de Linha para Temperaturas
+    st.line_chart(chart_data[["Máxima (°C)", "Mínima (°C)"]])
+
+    st.subheader(f"🌧️ Precipitação em {city}, {country}")
+    # Gráfico de Barra para Chuva
+    st.bar_chart(chart_data[["Precipitação (mm)"]])
 
 # --- Lógica Principal ---
 if search_btn:
@@ -107,7 +97,7 @@ if search_btn:
 
                         st.success(f"Dados encontrados para {city}, {country}!")
                         
-                        # Exibir Gráfico
+                        # Exibir Gráficos
                         plot_graph(df, city, country)
                         
                         # Exibir Tabela de Dados (Opcional)
